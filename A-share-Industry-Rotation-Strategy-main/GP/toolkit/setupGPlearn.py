@@ -1,6 +1,7 @@
 ﻿from gplearn.genetic import SymbolicRegressor
 from gplearn import fitness
 import dill
+import numpy as np
 
 
 def gp_save_factor(model, factor_num=''):
@@ -13,7 +14,7 @@ def gp_save_factor(model, factor_num=''):
 
 def my_gplearn(function_set, score_func, pop_num=1000, gen_num=10, tour_num=20,
                random_state=42, feature_names=None, verbose=1, n_jobs=1, **kwargs):
-    metric = fitness.make_fitness(function=score_func, greater_is_better=True, wrap=False)
+    metric = fitness.make_fitness(function=score_func, greater_is_better=True, wrap=True)
 
     return SymbolicRegressor(
         population_size=pop_num,
@@ -21,17 +22,17 @@ def my_gplearn(function_set, score_func, pop_num=1000, gen_num=10, tour_num=20,
         metric=metric,
         tournament_size=tour_num,
         function_set=function_set,
-        const_range=(-1.0, 1.0),
+        const_range=kwargs.get('const_range', (0.001, 1.0)),
         parsimony_coefficient=kwargs.get('parsimony_coefficient', 'auto'),
         max_samples=kwargs.get('max_samples', 1.0),
-        stopping_criteria=100.0,
-        init_depth=kwargs.get('init_depth', (2, 4)),
+        stopping_criteria=kwargs.get('stopping_criteria', np.inf),
+        init_depth=kwargs.get('init_depth', (2, 3)),
         init_method='half and half',
-        p_crossover=0.8,
+        p_crossover=0.7,
         p_subtree_mutation=0.05,
-        p_hoist_mutation=0.02,
+        p_hoist_mutation=0.10,
         p_point_mutation=0.05,
-        p_point_replace=0.03,
+        p_point_replace=0.05,
         feature_names=feature_names,
         warm_start=False,
         low_memory=False,

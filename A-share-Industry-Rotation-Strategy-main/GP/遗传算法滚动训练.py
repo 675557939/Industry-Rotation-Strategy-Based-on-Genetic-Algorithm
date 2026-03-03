@@ -121,7 +121,7 @@ def count_binary_ops(program_str):
 
 def score_func_ic(y, y_pred, sample_weight):
     if len(np.unique(y_pred[-1])) <= 10:
-        return -1
+        return -999          # 退化因子给极低惩罚，确保任何有意义的因子都优于常数
     y_arr = np.ascontiguousarray(y, dtype=np.float64)
     pred_arr = np.ascontiguousarray(y_pred, dtype=np.float64)
     if FITNESS_MODE == 'mono_topret':
@@ -191,11 +191,11 @@ def _fitness_ic_winrate(y_true, y_pred, n_groups=5):
 
 
 def _fitness_mono_topret(y_true, y_pred, n_groups=5):
-    """单调性 x Top组收益"""
+    """单调性 x 多空价差（对熊市鲁棒）"""
     n_days = y_true.shape[0]
     group_returns = np.zeros(n_groups, dtype=np.float64)
     group_counts = np.zeros(n_groups, dtype=np.float64)
-    top_returns = []
+    spread_returns = []   # Top组 - Bottom组 的日度价差
 
     for day in range(n_days):
         y_row = y_true[day, :]
@@ -214,9 +214,12 @@ def _fitness_mono_topret(y_true, y_pred, n_groups=5):
             end = start + group_size if g < n_groups - 1 else len(sorted_idx)
             group_returns[g] += np.mean(y_valid[sorted_idx[start:end]])
             group_counts[g] += 1
-        top_returns.append(np.mean(y_valid[sorted_idx[-group_size:]]))
 
-    if np.min(group_counts) < 5 or len(top_returns) < 5:
+        top_ret = np.mean(y_valid[sorted_idx[-group_size:]])
+        bot_ret = np.mean(y_valid[sorted_idx[:group_size]])
+        spread_returns.append(top_ret - bot_ret)
+
+    if np.min(group_counts) < 5 or len(spread_returns) < 5:
         return 0
 
     avg_returns = group_returns / (group_counts + 1e-10)
@@ -227,8 +230,14 @@ def _fitness_mono_topret(y_true, y_pred, n_groups=5):
         for i in range(n_groups - 1)
     )
 
-    avg_top_ret = np.mean(top_returns) * 252
-    score = np.clip(avg_top_ret * (0.3 + mono_score * 0.7), -10, 10)
+    # 使用多空价差（top - bottom）替代绝对top收益
+    # 这样在熊市中，只要因子能区分相对强弱，就能获得正fitness
+    avg_spread = np.mean(spread_returns) * 252     # 年化多空价差
+    spread_winrate = np.mean([1.0 if s > 0 else 0.0 for s in spread_returns])
+
+    # 综合得分 = 多空价差 × 单调性权重 + 价差胜率加分
+    score = avg_spread * (0.3 + mono_score * 0.7) + (spread_winrate - 0.5) * 2
+    score = np.clip(score, -10, 10)
     return score if not np.isnan(score) else 0
 
 
@@ -399,20 +408,33 @@ def rolling_factor_validation(close_df, x_dict,
 
         gp_model = None
         program_str = ''
-        for retry in range(3):
+        for retry in range(6):
             try:
                 gp_model = my_gplearn(
                     FUNCTION_SET, score_func_ic,
                     feature_names=feature_names,
                     pop_num=pop_num, gen_num=gen_num,
+                    parsimony_coefficient='auto',
+                    const_range=(0.001, 1.0),
+                    init_depth=(2, 3),
                     random_state=42 + (i % 10) * 100 + retry * 1000,
                     n_jobs=n_jobs
                 )
                 gp_model.fit(x_array_train, y_train.values)
-                program_str = str(gp_model._program)
-                if has_redundant_nesting(program_str) and count_binary_ops(program_str) < 2:
-                    if retry < 2:
+                program = gp_model._program
+                program_str = str(program)
+
+                bad_formula = (
+                    program.has_unary_nesting()
+                    or program.length_ > 45
+                    or program.depth_ > 6
+                    or re.search(r'log\(\s*-\d', program_str) is not None
+                )
+                if bad_formula:
+                    if retry < 5:
                         continue
+                    gp_model = None
+                    break
                 break
             except Exception as e:
                 print(f"  GP训练失败: {e}")
@@ -543,16 +565,25 @@ if __name__ == '__main__':
         print(f"数据加载失败: {e}")
         exit()
 
+    # 检查数据覆盖范围
+    data_end = close_data.index[-1]
+    print(f"\n数据实际覆盖: {close_data.index[0]:%Y-%m-%d} ~ {data_end:%Y-%m-%d}")
+
     CONFIG = {
-        'start_date': '2015-01-01',
-        'end_date': '2025-12-31',
-        'train_window': 400,
+        'start_date': '2024-01-01',
+        'end_date': '2024-12-31',
+        'train_window': 300,
         'pred_horizon': 30,
         'rebalance_freq': 'M',
         'gen_num': 4,
         'pop_num': 2000,
-        'n_jobs': 3
+        'n_jobs': -1
     }
+
+    cfg_end = pd.Timestamp(CONFIG['end_date'])
+    if cfg_end > data_end:
+        print(f"\n⚠ 警告: end_date({CONFIG['end_date']})超出数据范围({data_end:%Y-%m-%d})!")
+        print(f"  训练将在数据结束日自动截止。请更新行业指数CSV数据至{CONFIG['end_date']}。")
 
     factor_df, factor_log_df = rolling_factor_validation(
         close_df=close_data, x_dict=x_dict_for_gp, **CONFIG

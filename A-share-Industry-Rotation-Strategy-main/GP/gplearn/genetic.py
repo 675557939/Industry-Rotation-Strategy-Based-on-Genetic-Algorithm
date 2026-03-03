@@ -178,7 +178,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  function_set=('add', 'sub', 'mul', 'div'),
                  transformer=None,
                  metric='mean absolute error',
-                 parsimony_coefficient=0.001,
+                 parsimony_coefficient=0.01,
                  p_crossover=0.9,
                  p_subtree_mutation=0.01,
                  p_hoist_mutation=0.01,
@@ -449,6 +449,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                              % (self.generations, len(self._programs)))
         elif n_more_generations == 0:
             fitness = [program.raw_fitness_ for program in self._programs[-1]]
+            penalized_fitness = [program.fitness_ for program in self._programs[-1]]
             warn('Warm-start fitting without increasing n_estimators does not '
                  'fit new programs.')
 
@@ -500,6 +501,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             for program in population:
                 program.fitness_ = program.fitness(parsimony_coefficient)
 
+            penalized_fitness = [program.fitness_ for program in population]
+
             self._programs.append(population)
 
             # Remove old programs that didn't make it into the new population.
@@ -521,15 +524,15 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
             # Record run details
             if self._metric.greater_is_better:
-                best_program = population[np.argmax(fitness)]
+                best_program = population[np.argmax(penalized_fitness)]
             else:
-                best_program = population[np.argmin(fitness)]
+                best_program = population[np.argmin(penalized_fitness)]
 
             self.run_details_['generation'].append(gen)
             self.run_details_['average_length'].append(np.mean(length))
-            self.run_details_['average_fitness'].append(np.mean(fitness))
+            self.run_details_['average_fitness'].append(np.mean(penalized_fitness))
             self.run_details_['best_length'].append(best_program.length_)
-            self.run_details_['best_fitness'].append(best_program.raw_fitness_)
+            self.run_details_['best_fitness'].append(best_program.fitness_)
             oob_fitness = np.nan
             if self.max_samples < 1.0:
                 oob_fitness = best_program.oob_fitness_
@@ -542,17 +545,17 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
             # Check for early stopping
             if self._metric.greater_is_better:
-                best_fitness = fitness[np.argmax(fitness)]
+                best_fitness = penalized_fitness[np.argmax(penalized_fitness)]
                 if best_fitness >= self.stopping_criteria:
                     break
             else:
-                best_fitness = fitness[np.argmin(fitness)]
+                best_fitness = penalized_fitness[np.argmin(penalized_fitness)]
                 if best_fitness <= self.stopping_criteria:
                     break
 
         if isinstance(self, TransformerMixin):
             # Find the best individuals in the final generation
-            fitness = np.array(fitness)
+            fitness = np.array(penalized_fitness)
             if self._metric.greater_is_better:
                 hall_of_fame = fitness.argsort()[::-1][:self.hall_of_fame]
             else:
@@ -584,6 +587,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
         else:
             # Find the best individual in the final generation
+            fitness = np.array(penalized_fitness)
             if self._metric.greater_is_better:
                 self._program = self._programs[-1][np.argmax(fitness)]
             else:
@@ -800,7 +804,7 @@ class SymbolicRegressor(BaseSymbolic, RegressorMixin):
                  init_method='half and half',
                  function_set=('add', 'sub', 'mul', 'div'),
                  metric='mean absolute error',
-                 parsimony_coefficient=0.001,
+                 parsimony_coefficient=0.01,
                  p_crossover=0.9,
                  p_subtree_mutation=0.01,
                  p_hoist_mutation=0.01,
@@ -1088,7 +1092,7 @@ class SymbolicClassifier(BaseSymbolic, ClassifierMixin):
                  function_set=('add', 'sub', 'mul', 'div'),
                  transformer='sigmoid',
                  metric='log loss',
-                 parsimony_coefficient=0.001,
+                 parsimony_coefficient=0.01,
                  p_crossover=0.9,
                  p_subtree_mutation=0.01,
                  p_hoist_mutation=0.01,
@@ -1401,7 +1405,7 @@ class SymbolicTransformer(BaseSymbolic, TransformerMixin):
                  init_method='half and half',
                  function_set=('add', 'sub', 'mul', 'div'),
                  metric='pearson',
-                 parsimony_coefficient=0.001,
+                 parsimony_coefficient=0.01,
                  p_crossover=0.9,
                  p_subtree_mutation=0.01,
                  p_hoist_mutation=0.01,

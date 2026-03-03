@@ -236,50 +236,109 @@ class _Program(object):
         return terminals == [-1]
 
     def has_unary_nesting(self):
-        """Detect redundant structures in the program tree:
-        unary nesting, trivial single-variable formulas, identical binary args.
-        """
-        unary_funcs = {'log', 'sqrt', 'abs'}
-        redundant_root = {'log', 'sqrt'}
-        
-        program = self.program
-        n = len(program)
-        
-        if n > 0 and isinstance(program[0], _Function):
-            if program[0].name in redundant_root:
-                return True
-        
-        if n == 2:
-            if isinstance(program[0], _Function) and program[0].name in unary_funcs:
-                if isinstance(program[1], int):
-                    return True
-        
-        for i in range(n - 1):
-            node = program[i]
-            next_node = program[i + 1]
-            if isinstance(node, _Function) and isinstance(next_node, _Function):
-                if node.name in unary_funcs and next_node.name in unary_funcs:
-                    if node.arity == 1:
-                        return True
-        
-        if n == 3 and isinstance(program[0], _Function) and program[0].arity == 2:
-            if isinstance(program[1], int) and isinstance(program[2], int):
-                if program[1] == program[2]:
-                    return True
-            if isinstance(program[1], (int, float)) and isinstance(program[2], (int, float)):
-                var_count = sum(1 for x in program[1:] if isinstance(x, int))
-                if var_count <= 1:
-                    return True
-        
-        unique_vars = set()
-        for node in program:
-            if isinstance(node, int):
-                unique_vars.add(node)
-        
-        if len(unique_vars) <= 1:
+        """Detect redundant structures in the program tree."""
+        if not self.program:
             return True
-        
+
+        try:
+            tree, next_idx = self._build_tree(0)
+            if next_idx != len(self.program):
+                return True
+        except Exception:
+            return True
+
+        if tree[0] in ('var', 'const'):
+            return True
+
+        if self._has_redundant_tree(tree):
+            return True
+
+        used_vars = self._collect_vars(tree)
+        if len(used_vars) <= 1 and self.length_ <= 5:
+            return True
+
         return False
+
+    def _build_tree(self, start_idx):
+        node = self.program[start_idx]
+        if isinstance(node, _Function):
+            children = []
+            next_idx = start_idx + 1
+            for _ in range(node.arity):
+                child, next_idx = self._build_tree(next_idx)
+                children.append(child)
+            return ('func', node.name, tuple(children)), next_idx
+        if isinstance(node, int):
+            return ('var', node), start_idx + 1
+        return ('const', float(node)), start_idx + 1
+
+    def _tree_signature(self, tree):
+        if tree[0] == 'func':
+            return ('func', tree[1], tuple(self._tree_signature(c) for c in tree[2]))
+        return tree
+
+    @staticmethod
+    def _is_const(tree):
+        return tree[0] == 'const'
+
+    @staticmethod
+    def _is_zero_const(tree):
+        return tree[0] == 'const' and abs(tree[1]) < 1e-12
+
+    @staticmethod
+    def _is_one_const(tree):
+        return tree[0] == 'const' and abs(tree[1] - 1.0) < 1e-12
+
+    def _collect_vars(self, tree):
+        if tree[0] == 'var':
+            return {tree[1]}
+        if tree[0] == 'func':
+            vars_ = set()
+            for child in tree[2]:
+                vars_.update(self._collect_vars(child))
+            return vars_
+        return set()
+
+    def _has_redundant_tree(self, tree):
+        if tree[0] != 'func':
+            return False
+
+        op = tree[1]
+        children = tree[2]
+
+        if op in {'log', 'sqrt', 'abs'}:
+            child = children[0]
+            if child[0] == 'func' and child[1] in {'log', 'sqrt', 'abs'}:
+                return True
+            if op == 'log' and child[0] == 'const' and child[1] <= 0:
+                return True
+            if op == 'log' and child[0] == 'func' and child[1] == 'div':
+                left_div, right_div = child[2]
+                if self._tree_signature(left_div) == self._tree_signature(right_div):
+                    return True
+
+        if len(children) == 2:
+            left, right = children
+            left_sig = self._tree_signature(left)
+            right_sig = self._tree_signature(right)
+
+            if op in {'min', 'max', 'sub', 'div'} and left_sig == right_sig:
+                return True
+
+            if op == 'add' and (self._is_zero_const(left) or self._is_zero_const(right)):
+                return True
+            if op == 'sub' and self._is_zero_const(right):
+                return True
+            if op == 'mul' and (self._is_one_const(left) or self._is_one_const(right)):
+                return True
+            if op == 'mul' and (self._is_zero_const(left) or self._is_zero_const(right)):
+                return True
+            if op == 'div' and self._is_one_const(right):
+                return True
+            if op == 'div' and self._is_zero_const(left):
+                return True
+
+        return any(self._has_redundant_tree(child) for child in children)
 
     def __str__(self):
         """Overloads `print` output of the object to resemble a LISP tree."""
@@ -506,7 +565,7 @@ class _Program(object):
 
         """
         if self.has_unary_nesting():
-            return -1.0
+            return -10.0
         
         y_pred = self.execute(X)
         if self.transformer:
